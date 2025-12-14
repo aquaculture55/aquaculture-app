@@ -12,6 +12,7 @@ import 'trends_page.dart';
 import 'alerts_page.dart';
 import 'profile_page.dart';
 import 'threshold_settings_page.dart';
+import 'control_page.dart';
 
 class MainPage extends StatefulWidget {
   const MainPage({super.key});
@@ -194,7 +195,7 @@ class _MainPageState extends State<MainPage>
         ),
       ),
       actions: [
-        if (_currentIndex == 2 && user != null && deviceId != null)
+        if (_currentIndex == 3 && user != null && deviceId != null)
           IconButton(
             icon: const Icon(Icons.delete_forever, color: Colors.white),
             tooltip: 'Delete all alerts',
@@ -227,7 +228,8 @@ class _MainPageState extends State<MainPage>
           mqttState.appConnectionState == MQTTAppConnectionState.connected
               ? Icons.cloud_done
               : Icons.cloud_off,
-          color: mqttState.appConnectionState == MQTTAppConnectionState.connected
+          color:
+              mqttState.appConnectionState == MQTTAppConnectionState.connected
               ? Colors.greenAccent
               : Colors.redAccent,
         ),
@@ -253,19 +255,26 @@ class _MainPageState extends State<MainPage>
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: Colors.black,
-        title: const Text("Delete All Alerts", style: TextStyle(color: Colors.white)),
+        title: const Text(
+          "Delete All Alerts",
+          style: TextStyle(color: Colors.white),
+        ),
         content: const Text(
           "⚠️ This will permanently delete all alerts for this device.\n\nAre you sure?",
-        style: TextStyle(color: Colors.yellow)),
+          style: TextStyle(color: Colors.yellow),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel",style: TextStyle(color: Colors.white)),
+            child: const Text("Cancel", style: TextStyle(color: Colors.white)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("Delete All", style: TextStyle(color: Colors.white)),
+            child: const Text(
+              "Delete All",
+              style: TextStyle(color: Colors.white),
+            ),
           ),
         ],
       ),
@@ -348,9 +357,11 @@ class _MainPageState extends State<MainPage>
                       key: ValueKey(d.deviceId),
                       title: Text(label),
                       subtitle: Text(d.displayTopic),
-                      trailing: Provider.of<DeviceContext>(context, listen: false)
-                                  .selected
-                                  ?.deviceId ==
+                      trailing:
+                          Provider.of<DeviceContext>(
+                                context,
+                                listen: false,
+                              ).selected?.deviceId ==
                               d.deviceId
                           ? const Icon(Icons.check, color: Colors.blue)
                           : null,
@@ -373,7 +384,6 @@ class _MainPageState extends State<MainPage>
     );
   }
 
-
   @override
   Widget build(BuildContext context) {
     final mqttState = context.watch<MQTTAppState>();
@@ -388,6 +398,7 @@ class _MainPageState extends State<MainPage>
         sensors: _sensors,
         deviceId: deviceId ?? '',
       ),
+      const ControlPage(),
       AlertsPage(deviceId: deviceId ?? ''),
       const ProfilePage(),
     ];
@@ -455,6 +466,10 @@ class _MainPageState extends State<MainPage>
             const BottomNavigationBarItem(
               icon: Icon(Icons.show_chart),
               label: 'Trends',
+            ),
+            const BottomNavigationBarItem(
+              icon: Icon(Icons.gamepad), // Or Icons.toggle_on
+              label: 'Control',
             ),
             BottomNavigationBarItem(
               icon: StreamBuilder<int>(

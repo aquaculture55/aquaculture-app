@@ -21,8 +21,34 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
   bool _loading = false;
   static const topicFormat = 'aquaculture/<state>/<district>/<area>/<site>';
 
+  // Function to delete device from history
+  Future<void> _deleteDevice(String deviceId) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      await _firestore
+          .collection('users')
+          .doc(user.uid)
+          .collection('devices')
+          .doc(deviceId)
+          .delete();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Device removed from history')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error removing device: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _selectTopic(String topic) async {
-    // Close the picker immediately
     if (!mounted) return;
     Navigator.pop(context);
 
@@ -39,7 +65,6 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) throw Exception("Not logged in");
 
-      // Prepare async tasks
       final firestoreQuery = _firestore
           .collection('devices')
           .where('state', isEqualTo: parts[1])
@@ -53,7 +78,6 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
         fcmTopic,
       );
 
-      // Wait for Firestore query
       final snapshot = await firestoreQuery;
       DeviceInfo deviceInfo;
 
@@ -73,10 +97,8 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
         );
       }
 
-      // Set selected device immediately (optimistic)
       await deviceCtx.setSelected(deviceInfo, saveToken: true);
 
-      // Firestore user devices update + FCM + MQTT in parallel
       await Future.wait([
         fcmSubscribe,
         _firestore
@@ -139,6 +161,9 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
         .orderBy('linkedAt', descending: true)
         .snapshots();
 
+    // Calculate a safe maximum width for the chips (Screen width - Padding)
+    final double maxChipWidth = MediaQuery.of(context).size.width - 50;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -148,7 +173,6 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
         backgroundColor: const Color(0xFF2563EB),
         iconTheme: const IconThemeData(color: Colors.white),
       ),
-      // FIX: Wrap the body in SingleChildScrollView to allow scrolling
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -171,7 +195,6 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
                 ),
                 const SizedBox(height: 16),
 
-                // ... (Your Autocomplete widget stays the same) ...
                 Autocomplete<String>(
                   optionsBuilder: (TextEditingValue textEditingValue) async {
                     return await _getSuggestions(textEditingValue.text);
@@ -184,26 +207,25 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
                   },
                   fieldViewBuilder:
                       (context, controller, focusNode, onEditingComplete) {
-                        return TextFormField(
-                          controller: _topicController,
-                          focusNode: focusNode,
-                          decoration: const InputDecoration(
-                            labelText: 'Enter Topic',
-                            hintText: 'e.g. aquaculture/MY/Kedah/Area1/SiteA',
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Topic cannot be empty';
-                            }
-                            // Simplified regex check for brevity in this snippet
-                            if (!value.contains('/')) {
-                              return 'Invalid format';
-                            }
-                            return null;
-                          },
-                        );
+                    return TextFormField(
+                      controller: _topicController,
+                      focusNode: focusNode,
+                      decoration: const InputDecoration(
+                        labelText: 'Enter Topic',
+                        hintText: 'e.g. aquaculture/MY/Kedah/Area1/SiteA',
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return 'Topic cannot be empty';
+                        }
+                        if (!value.contains('/')) {
+                          return 'Invalid format';
+                        }
+                        return null;
                       },
+                    );
+                  },
                 ),
                 const SizedBox(height: 24),
 
@@ -250,8 +272,6 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const SizedBox(height: 8),
-                        // Wrap allows items to flow to next line,
-                        // and SingleChildScrollView allows scrolling down
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,
@@ -262,36 +282,59 @@ class _DevicePickerPageState extends State<DevicePickerPage> {
                             final site = doc['site'] ?? '';
                             final topic =
                                 'aquaculture/$state/$district/$area/$site';
+                            
+                            final deviceId = doc.id;
 
-                            return InkWell(
-                              onTap: () => _selectTopic(topic),
-                              borderRadius: BorderRadius.circular(12),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 8,
+                            return Container(
+                              // --- FIX: 1. Constrain Width ---
+                              constraints: BoxConstraints(maxWidth: maxChipWidth),
+                              padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.shade50,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.blue.shade200,
                                 ),
-                                decoration: BoxDecoration(
-                                  color: Colors.blue.shade50,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: Colors.blue.shade200,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // --- FIX: 2. Use Flexible for Text ---
+                                  Flexible(
+                                    child: InkWell(
+                                      onTap: () => _selectTopic(topic),
+                                      child: Padding(
+                                        padding: const EdgeInsets.only(right: 8.0),
+                                        child: Text(
+                                          topic,
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.black87,
+                                          ),
+                                          // Optional: Use ellipsis if you prefer single line
+                                          // overflow: TextOverflow.ellipsis, 
+                                        ),
+                                      ),
+                                    ),
                                   ),
-                                ),
-                                child: Text(
-                                  topic,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.black87,
+                                  // Delete Button (Cross)
+                                  InkWell(
+                                    onTap: () => _deleteDevice(deviceId),
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(4.0),
+                                      child: Icon(
+                                        Icons.close, 
+                                        size: 18, 
+                                        color: Colors.red.shade400
+                                      ),
+                                    ),
                                   ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.visible,
-                                ),
+                                ],
                               ),
                             );
                           }).toList(),
                         ),
-                        // Add some extra padding at the bottom for better scrolling experience
                         const SizedBox(height: 20),
                       ],
                     );

@@ -1,24 +1,16 @@
 {
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "name": "C/C++ Runner: Debug Session",
-      "type": "cppdbg",
-      "request": "launch",
-      "args": [],
-      "stopAtEntry": false,
-      "externalConsole": true,
-      "cwd": "c:/Users/Asus/Desktop/aquaculture mqtt/aquaculture",
-      "program": "c:/Users/Asus/Desktop/aquaculture mqtt/aquaculture/build/Debug/outDebug",
-      "MIMode": "gdb",
-      "miDebuggerPath": "gdb",
-      "setupCommands": [
+    "version": "0.2.0",
+    "configurations": [
         {
-          "description": "Enable pretty-printing for gdb",
-          "text": "-enable-pretty-printing",
-          "ignoreFailures": true
+            "name": "aquaculture",
+            "request": "launch",
+            "type": "dart"
+        },
+        {
+            "name": "aquaculture (profile)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "profile"
         }
-      ]
-    }
-  ]
+    ]
 }
