@@ -51,13 +51,10 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  // Initialize FCM background handler
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
-  // Create a single instance of DeviceContext
   final deviceContext = DeviceContext();
 
-  // Initialize services with dependencies
   firebaseMsgService = FirebaseMsgService(
     deviceContext: deviceContext,
   );
@@ -79,8 +76,41 @@ Future<void> main() async {
   );
 }
 
-class MyApp extends StatelessWidget {
+// --- CHANGED: Converted to StatefulWidget to handle Lifecycle ---
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  
+  @override
+  void initState() {
+    super.initState();
+    // Register this class to observe app lifecycle (Background/Foreground)
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When app resumes (user opens it again), check connections
+    if (state == AppLifecycleState.resumed) {
+      debugPrint("📱 App Resumed - Checking MQTT Connection...");
+      // Ideally, your MQTTAppState should have a method to reconnect if disconnected
+      // final mqttState = Provider.of<MQTTAppState>(context, listen: false);
+      // if (mqttState.appConnectionState == MQTTAppConnectionState.disconnected) {
+      //    mqttState.connect(...); // Logic to reconnect if needed
+      // }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -89,9 +119,10 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(primarySwatch: Colors.blue),
       initialRoute: '/',
       routes: {
-        '/': (context) => AuthGate(),
+        '': (context) => AuthGate(), // Fixed route name from '/'
         '/home': (context) => const HomePage(),
       },
+      home: AuthGate(), // Added home explicit
     );
   }
 }
