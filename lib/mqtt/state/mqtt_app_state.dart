@@ -12,6 +12,10 @@ class MQTTAppState with ChangeNotifier {
   /// deviceId -> sensor -> value (string for formatted display)
   final Map<String, Map<String, String>> _sensorData = {};
 
+  /// deviceId -> sensor -> DateTime (Track when we last heard from the device)
+  /// This is CRITICAL for the "Button Cooldown" logic.
+  final Map<String, Map<String, DateTime>> _lastUpdated = {};
+
   /// (deviceId-sensor) -> list of {time, value}
   final Map<String, List<Map<String, dynamic>>> _sensorHistory = {};
 
@@ -33,12 +37,38 @@ class MQTTAppState with ChangeNotifier {
   }
 
   // ---------------------------
+  // Data Access Helpers
+  // ---------------------------
+  String getSensorValue(String deviceId, String sensorName) {
+    return _sensorData[deviceId]?[sensorName] ?? "N/A";
+  }
+
+  /// Returns the exact time the device last updated this specific sensor/status.
+  DateTime? getLastUpdateTime(String deviceId, String sensorKey) {
+    return _lastUpdated[deviceId]?[sensorKey];
+  }
+
+  List<Map<String, dynamic>> getHistoryFor(
+    String deviceId,
+    String sensorName,
+  ) {
+    return _sensorHistory["$deviceId-$sensorName"] ?? [];
+  }
+
+  // ---------------------------
   // Sensor Data Management
   // ---------------------------
+  
+  /// Handle incoming NUMBERS (Temperature, pH, etc.)
   void updateSensorData(String deviceId, String sensorKey, double value) {
     _sensorData.putIfAbsent(deviceId, () => {});
     _sensorData[deviceId]![sensorKey] = value.toStringAsFixed(2);
 
+    // --- NEW: Update Timestamp ---
+    _lastUpdated.putIfAbsent(deviceId, () => {});
+    _lastUpdated[deviceId]![sensorKey] = DateTime.now();
+
+    // Update History
     final historyKey = "$deviceId-$sensorKey";
     _sensorHistory.putIfAbsent(historyKey, () => []);
 
@@ -46,6 +76,19 @@ class MQTTAppState with ChangeNotifier {
     list.add({"time": DateTime.now(), "value": value});
 
     _trimHistory(list);
+
+    notifyListeners();
+  }
+
+  /// Handle incoming STRINGS (Lamp Status "ON", Feeder "Idle", etc.)
+  void updateStatus(String deviceId, String key, String value) {
+    _sensorData.putIfAbsent(deviceId, () => {});
+    _sensorData[deviceId]![key] = value; 
+
+    // --- NEW: Update Timestamp ---
+    // This allows the UI to know the exact moment the device confirmed the status
+    _lastUpdated.putIfAbsent(deviceId, () => {});
+    _lastUpdated[deviceId]![key] = DateTime.now();
 
     notifyListeners();
   }
@@ -58,20 +101,10 @@ class MQTTAppState with ChangeNotifier {
     notifyListeners();
   }
 
-  String getSensorValue(String deviceId, String sensorName) {
-    return _sensorData[deviceId]?[sensorName] ?? "N/A";
-  }
-
-  List<Map<String, dynamic>> getHistoryFor(
-    String deviceId,
-    String sensorName,
-  ) {
-    return _sensorHistory["$deviceId-$sensorName"] ?? [];
-  }
-
   void clearHistory(String deviceId) {
     _sensorHistory.removeWhere((key, _) => key.startsWith(deviceId));
     _sensorData.remove(deviceId);
+    _lastUpdated.remove(deviceId); // Clear timestamps too
     notifyListeners();
   }
 
@@ -158,17 +191,11 @@ class MQTTAppState with ChangeNotifier {
     final manager = _managers[deviceId];
     if (manager != null) {
       // Publishes to 'aquaculture/.../site/control'
-      manager.publish("control", command, retain: true); 
+      // CHANGED: retain: false. Control commands should be momentary triggers.
+      // Retained commands cause devices to turn on unexpectedly after reboots.
+      manager.publish("control", command, retain: false); 
     } else {
       debugPrint("❌ No active MQTT manager for device $deviceId");
     }
   }
-
-  void updateStatus(String deviceId, String key, String value) {
-    _sensorData.putIfAbsent(deviceId, () => {});
-    _sensorData[deviceId]![key] = value; // Store string directly
-    notifyListeners();
-  }
-
-  
 }

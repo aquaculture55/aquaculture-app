@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -13,54 +12,10 @@ class ControlPage extends StatefulWidget {
 }
 
 class _ControlPageState extends State<ControlPage> {
-  // --- Fish Feeder State ---
-  bool _feederDisabled = false;
-  int _feederCooldown = 0;
-  Timer? _feederTimer;
-
-  // --- 12V Lamp State ---
-  bool _lampDisabled = false;
-  int _lampCooldown = 0;
-  Timer? _lampTimer;
-
-  @override
-  void dispose() {
-    _feederTimer?.cancel();
-    _lampTimer?.cancel();
-    super.dispose();
-  }
-
-  void _startCooldown(String deviceType, int durationSeconds) {
-    setState(() {
-      if (deviceType == 'feeder') {
-        _feederDisabled = true;
-        _feederCooldown = durationSeconds;
-      } else {
-        _lampDisabled = true;
-        _lampCooldown = durationSeconds;
-      }
-    });
-
-    Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        if (deviceType == 'feeder') {
-          if (_feederCooldown > 0) {
-            _feederCooldown--;
-          } else {
-            _feederDisabled = false;
-            timer.cancel();
-          }
-        } else {
-          if (_lampCooldown > 0) {
-            _lampCooldown--;
-          } else {
-            _lampDisabled = false;
-            timer.cancel();
-          }
-        }
-      });
-    });
-  }
+  // We store the time we sent the command.
+  // We only re-enable the button if the MQTT update is NEWER than this time.
+  DateTime? _lastFeederCommandTime;
+  DateTime? _lastLampCommandTime;
 
   @override
   Widget build(BuildContext context) {
@@ -70,10 +25,34 @@ class _ControlPageState extends State<ControlPage> {
 
     if (device == null) return const Center(child: Text("No device selected"));
 
-    // --- FIX: Get the current status from MQTT State ---
-    // This reads the value stored in your app state (e.g., "ON", "OFF", or "N/A")
+    // ---------------------------------------------------------------
+    // 1. Calculate LAMP State
+    // ---------------------------------------------------------------
     final String currentLampStatus = mqttState.getSensorValue(device.deviceId, 'lamp');
     final bool isLampOn = currentLampStatus == "ON";
+    final DateTime? lastLampUpdate = mqttState.getLastUpdateTime(device.deviceId, 'lamp');
+
+    // Button is disabled if:
+    // We sent a command AND (We haven't received an update OR the update is older than our command)
+    bool isLampDisabled = false;
+    if (_lastLampCommandTime != null) {
+      if (lastLampUpdate == null || lastLampUpdate.isBefore(_lastLampCommandTime!)) {
+        isLampDisabled = true;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // 2. Calculate FEEDER State
+    // ---------------------------------------------------------------
+    final DateTime? lastFeederUpdate = mqttState.getLastUpdateTime(device.deviceId, 'feeder');
+    
+    bool isFeederDisabled = false;
+    if (_lastFeederCommandTime != null) {
+      // If we commanded it, wait until we get a newer message from the device
+      if (lastFeederUpdate == null || lastFeederUpdate.isBefore(_lastFeederCommandTime!)) {
+        isFeederDisabled = true;
+      }
+    }
 
     return Scaffold(
       appBar: AppBar(title: const Text("Control Terminal")),
@@ -90,15 +69,21 @@ class _ControlPageState extends State<ControlPage> {
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
               ),
-              onPressed: _feederDisabled
-                  ? null
+              onPressed: isFeederDisabled
+                  ? null // Disabled while waiting for device
                   : () {
+                      // 1. Send Command
                       final payload = jsonEncode({"feeder": "ACTIVATE"});
                       mqttState.sendControlCommand(device.deviceId, payload);
-                      _startCooldown('feeder', 30);
+
+                      // 2. Mark the time. Button disables immediately.
+                      // It will ONLY re-enable when device sends a status update with a newer time.
+                      setState(() {
+                        _lastFeederCommandTime = DateTime.now();
+                      });
                     },
               child: Text(
-                _feederDisabled ? "Wait ${_feederCooldown}s" : "Feed Now",
+                isFeederDisabled ? "Waiting for Device..." : "Feed Now",
                 style: const TextStyle(fontSize: 18),
               ),
             ),
@@ -106,11 +91,9 @@ class _ControlPageState extends State<ControlPage> {
             const Divider(height: 60, thickness: 2),
 
             // ================= 12V LAMP CONTROL =================
-            // Bonus: I updated the icon color to reflect the actual status!
-            Icon(Icons.lightbulb, 
-              size: 80, 
-              color: isLampOn ? Colors.yellow[700] : Colors.grey
-            ),
+            Icon(Icons.lightbulb,
+                size: 80,
+                color: isLampOn ? Colors.yellow[700] : Colors.grey),
             const SizedBox(height: 10),
             Text("12V Lamp", style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 10),
@@ -120,21 +103,21 @@ class _ControlPageState extends State<ControlPage> {
                 backgroundColor: Colors.blueGrey,
                 foregroundColor: Colors.white,
               ),
-              onPressed: _lampDisabled
+              onPressed: isLampDisabled
                   ? null
                   : () {
-                      // --- FIX: Use the calculated variable here ---
                       final String command = isLampOn ? "OFF" : "ON";
                       final payload = jsonEncode({"lamp": command});
-                      
                       mqttState.sendControlCommand(device.deviceId, payload);
-                      
-                      _startCooldown('lamp', 5);
+
+                      setState(() {
+                        _lastLampCommandTime = DateTime.now();
+                      });
                     },
               child: Text(
-                _lampDisabled 
-                    ? "Cooling down ${_lampCooldown}s" 
-                    : "Turn ${isLampOn ? 'OFF' : 'ON'}", // Text changes dynamically
+                isLampDisabled
+                    ? "Syncing..."
+                    : "Turn ${isLampOn ? 'OFF' : 'ON'}",
                 style: const TextStyle(fontSize: 18),
               ),
             ),
