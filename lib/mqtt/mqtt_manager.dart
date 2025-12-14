@@ -225,9 +225,9 @@ class MQTTManager {
   // Incoming messages
   // ------------------------------------------------------------
   Future<void> _handleIncomingMessage(String topic, String payload) async {
-    // Only handle messages from our subscribed topic
+  // Only handle messages from our subscribed topic
     if (topic != topicPath) return;
-
+  
     Map<String, dynamic> raw;
     try {
       raw = jsonDecode(payload) as Map<String, dynamic>;
@@ -235,67 +235,86 @@ class MQTTManager {
       debugPrint("❌ Invalid JSON payload for $deviceId: $payload");
       return;
     }
-
-    final normalized = <String, double>{};
+  
+    // Separate numbers (sensors) from strings (status)
+    final normalizedSensors = <String, double>{};
+    final statusUpdates = <String, String>{};
+  
     for (final entry in raw.entries) {
-      final sensorKey = entry.key.toLowerCase();
-      final numVal = _toDouble(entry.value);
+      final key = entry.key.toLowerCase();
+      final val = entry.value;
+  
+      final numVal = _toDouble(val);
+  
       if (numVal != null) {
-        normalized[sensorKey] = numVal;
-        state.updateSensorData(deviceId, sensorKey, numVal);
+        // --- Handle Numbers (Temperature, pH, etc.) ---
+        normalizedSensors[key] = numVal;
+        state.updateSensorData(deviceId, key, numVal);
+      } else if (val is String) {
+        // --- Handle Status (Lamp: "ON", Feeder: "Idle") ---
+        statusUpdates[key] = val;
+        // Make sure you added the updateStatus method to MQTTAppState!
+        state.updateStatus(deviceId, key, val);
       }
     }
-
-    if (normalized.isEmpty) return;
-
-    // Firestore writes
+  
+    if (normalizedSensors.isEmpty && statusUpdates.isEmpty) return;
+  
     final timestamp = FieldValue.serverTimestamp();
-
+  
+    // 1. Write Latest Readings (Include BOTH sensors and status)
     try {
-      await _firestore
-          .collection("latest_readings")
-          .doc(deviceId)
-          .set({
-        ...normalized,
+      await _firestore.collection("latest_readings").doc(deviceId).set({
+        ...normalizedSensors,
+        ...statusUpdates, // Saves "lamp": "ON" to Firestore
         "timestamp": timestamp,
       }, SetOptions(merge: true));
     } catch (e) {
       debugPrint("❌ Write latest_readings failed: $e");
     }
-
-    try {
-      await _firestore
-          .collection("readings")
-          .doc(deviceId)
-          .collection("data")
-          .add({
-        ...normalized,
-        "timestamp": timestamp,
-      });
-    } catch (e) {
-      debugPrint("❌ Write readings history failed: $e");
+  
+    // 2. Write History (Only store numeric sensors to save DB space)
+    if (normalizedSensors.isNotEmpty) {
+      try {
+        await _firestore
+            .collection("readings")
+            .doc(deviceId)
+            .collection("data")
+            .add({
+          ...normalizedSensors,
+          "timestamp": timestamp,
+        });
+      } catch (e) {
+        debugPrint("❌ Write readings history failed: $e");
+      }
     }
-
-    // Threshold checks & notifications
+  
+    // 3. Threshold checks & notifications (Only for numeric sensors)
     final user = _auth.currentUser;
     if (user == null) return;
-
+  
+    // Note: Iterate over normalizedSensors, NOT raw entries, to avoid crashing on strings
     for (final entry in _thresholds.entries) {
       final sensorKey = entry.key;
+      
+      // Skip if we didn't receive a number for this sensor
+      if (!normalizedSensors.containsKey(sensorKey)) continue;
+  
       final th = entry.value;
       final min = th['min'];
       final max = th['max'];
-      final currentValue = normalized[sensorKey];
-
+      final currentValue = normalizedSensors[sensorKey]; // Use the double map
+  
       if (currentValue == null || min == null || max == null) continue;
-
+  
       if (currentValue < min || currentValue > max) {
         final isLow = currentValue < min;
         final title = "⚠ ${sensorKey.toUpperCase()} ${isLow ? 'Low' : 'High'}";
         final msg = isLow
             ? "${currentValue.toStringAsFixed(2)} below min ($min)"
             : "${currentValue.toStringAsFixed(2)} above max ($max)";
-
+  
+        // ... (Rest of your notification logic remains the same)
         try {
           await _firestore
               .collection("users")
@@ -313,7 +332,7 @@ class MQTTManager {
         } catch (e) {
           debugPrint("❌ Failed to write alert: $e");
         }
-
+  
         try {
           await _notiService.showNotification(title: title, body: msg);
         } catch (e) {
@@ -366,9 +385,9 @@ class MQTTManager {
   /// Publishes a control command to the device topic.
 
   /// [subtopic] example: "control" -> topic becomes ".../site/control"
-  /// [message] example: "{"pump": "ON"}"
+  /// [message] example: "{"motor": "ON"}"
 
-  void publish(String subtopic, String message, {bool retain = true}) {
+  void publish(String subtopic, String message, {bool retain = false}) {
     if (_client.connectionStatus?.state != MqttConnectionState.connected) {
       debugPrint("❌ Cannot publish: MQTT not connected");
       return;

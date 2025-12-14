@@ -163,4 +163,12 @@ class MQTTAppState with ChangeNotifier {
       debugPrint("❌ No active MQTT manager for device $deviceId");
     }
   }
+
+  void updateStatus(String deviceId, String key, String value) {
+    _sensorData.putIfAbsent(deviceId, () => {});
+    _sensorData[deviceId]![key] = value; // Store string directly
+    notifyListeners();
+  }
+
+  
 }
