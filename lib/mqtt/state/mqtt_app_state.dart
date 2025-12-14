@@ -153,4 +153,14 @@ class MQTTAppState with ChangeNotifier {
     }
     _managers.clear();
   }
+
+  void sendControlCommand(String deviceId, String command) {
+    final manager = _managers[deviceId];
+    if (manager != null) {
+      // Publishes to 'aquaculture/.../site/control'
+      manager.publish("control", command, retain: true); 
+    } else {
+      debugPrint("❌ No active MQTT manager for device $deviceId");
+    }
+  }
 }

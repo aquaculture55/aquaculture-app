@@ -362,4 +362,32 @@ class MQTTManager {
     if (v is String) return double.tryParse(v);
     return null;
   }
+
+  /// Publishes a control command to the device topic.
+
+  /// [subtopic] example: "control" -> topic becomes ".../site/control"
+  /// [message] example: "{"pump": "ON"}"
+
+  void publish(String subtopic, String message, {bool retain = true}) {
+    if (_client.connectionStatus?.state != MqttConnectionState.connected) {
+      debugPrint("❌ Cannot publish: MQTT not connected");
+      return;
+    }
+
+    final pubTopic = "$topicPath/$subtopic";
+    final builder = MqttClientPayloadBuilder();
+    builder.addString(message);
+
+    try {
+      _client.publishMessage(
+        pubTopic,
+        MqttQos.atLeastOnce,
+        builder.payload!,
+        retain: retain,
+      );
+      debugPrint("📤 Published to $pubTopic: $message (Retain: $retain)");
+    } catch (e) {
+      debugPrint("❌ Failed to publish: $e");
+    }
+  }
 }
