@@ -1,11 +1,10 @@
-// lib/pages/control_page.dart
-import 'dart:async';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../device_context.dart';
 import '../mqtt/state/mqtt_app_state.dart';
+import 'control_controller.dart'; 
 
 class ControlPage extends StatefulWidget {
   const ControlPage({super.key});
@@ -15,12 +14,7 @@ class ControlPage extends StatefulWidget {
 }
 
 class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClientMixin {
-  // --- CONFIGURATION ---
-  static const int kSleepDurationSeconds = 15 * 60; // 15 Minutes
-
-  DateTime? _lastFeederCommandTime;
-  DateTime? _lastLampCommandTime;
-  Timer? _uiRefreshTimer;
+  final ControlController _controller = ControlController();
 
   @override
   bool get wantKeepAlive => true;
@@ -28,26 +22,28 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
   @override
   void initState() {
     super.initState();
-    _uiRefreshTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        if (_lastFeederCommandTime != null || _lastLampCommandTime != null) {
-           setState(() {});
-        }
+    // Initialize controller with device ID once available
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final deviceCtx = Provider.of<DeviceContext>(context, listen: false);
+      if (deviceCtx.selected != null) {
+        _controller.init(deviceCtx.selected!.deviceId);
       }
     });
   }
 
   @override
   void dispose() {
-    _uiRefreshTimer?.cancel();
+    _controller.dispose();
     super.dispose();
   }
 
-  String _formatCountdown(int totalSeconds) {
-    if (totalSeconds < 0) return "00:00";
-    final int minutes = totalSeconds ~/ 60;
-    final int seconds = totalSeconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  // Helper to parse Firestore timestamp safely
+  DateTime? _parseTimestamp(dynamic val) {
+    if (val == null) return null;
+    if (val is Timestamp) return val.toDate();
+    if (val is String) return DateTime.tryParse(val);
+    if (val is int) return DateTime.fromMillisecondsSinceEpoch(val);
+    return null;
   }
 
   @override
@@ -67,148 +63,141 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
           .snapshots(),
       builder: (context, snapshot) {
         
-        String feederStatus = mqttState.getSensorValue(device.deviceId, 'feeder');
+        // ---------------------------------------------
+        // 1. DATA GATHERING
+        // ---------------------------------------------
+        // Note: For Feeder, we now rely on the controller for the label ("FED"/"READY")
+        // but we still fetch lamp status ("ON"/"OFF") from DB/MQTT.
         String lampStatus = mqttState.getSensorValue(device.deviceId, 'lamp');
+        
+        DateTime? fsFeederTime;
+        DateTime? fsLampTime;
 
-        // Prefer Firestore data if available (Sync source)
         if (snapshot.hasData && snapshot.data!.exists) {
           final data = snapshot.data!.data() as Map<String, dynamic>?;
           if (data != null) {
-            if (data.containsKey('feeder')) {
-               final fsVal = data['feeder'].toString();
-               if (feederStatus == "N/A" || fsVal.isNotEmpty) feederStatus = fsVal;
+            // Fill missing lamp status from DB
+            if (data.containsKey('lamp') && lampStatus == "N/A") {
+               lampStatus = data['lamp'].toString();
             }
-            if (data.containsKey('lamp')) {
-               final lsVal = data['lamp'].toString();
-               if (lampStatus == "N/A" || lsVal.isNotEmpty) lampStatus = lsVal;
+            // Extract timestamps
+            fsFeederTime = _parseTimestamp(data['feeder_last_updated']);
+            fsLampTime = _parseTimestamp(data['lamp_last_updated']);
+          }
+        }
+
+        // ---------------------------------------------
+        // 2. SYNC WITH CONTROLLER
+        // ---------------------------------------------
+        
+        // Determine newest Feeder time (MQTT vs Firestore)
+        final mqttFeederTime = mqttState.getLastUpdateTime(device.deviceId, 'feeder');
+        DateTime? newestFeeder = mqttFeederTime;
+        if (fsFeederTime != null) {
+           if (newestFeeder == null || fsFeederTime.isAfter(newestFeeder)) {
+             newestFeeder = fsFeederTime;
+           }
+        }
+        _controller.syncFeederTime(device.deviceId, newestFeeder);
+
+        // Determine newest Lamp time
+        final mqttLampTime = mqttState.getLastUpdateTime(device.deviceId, 'lamp');
+        DateTime? newestLamp = mqttLampTime;
+        if (fsLampTime != null) {
+           if (newestLamp == null || fsLampTime.isAfter(newestLamp)) {
+             newestLamp = fsLampTime;
+           }
+        }
+        _controller.syncLampTime(device.deviceId, newestLamp);
+
+        // ---------------------------------------------
+        // 3. UI RENDERING
+        // ---------------------------------------------
+        
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            
+            // --- Feeder Status Logic (Controlled by App) ---
+            final bool showGreenStatus = _controller.isRecentlyFed;
+            final String feederDisplayStatus = _controller.feederStatusLabel; // "FED" or "READY"
+            final Color feederColor = showGreenStatus ? Colors.green : Colors.deepOrange;
+
+            // --- Lamp Status Logic (Controlled by Device State) ---
+            final bool isLampOn = lampStatus.toUpperCase() == "ON";
+            final Color lampColor = isLampOn ? Colors.green[700]! : Colors.red[700]!;
+            
+            final bool isFeederDisabled = _controller.isFeederSyncing || _controller.isFeederCooling;
+            final bool isLampDisabled = _controller.isLampSyncing || _controller.isLampCooling;
+
+            if (_controller.uiMessage != null) {
+              final String msg = _controller.uiMessage!;
+              
+              // 1. Clear the message immediately so it doesn't popup twice
+              _controller.clearMessage(); 
+
+              // 2. Show the SnackBar safely after the build is done
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(msg),
+                    backgroundColor: Colors.red,
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              });
             }
-          }
-        }
 
-        final bool isLampOn = lampStatus.toUpperCase() == "ON";
-        final DateTime? lastFeederUpdate = mqttState.getLastUpdateTime(device.deviceId, 'feeder');
-        final DateTime? lastLampUpdate = mqttState.getLastUpdateTime(device.deviceId, 'lamp');
-
-        // ==========================================
-        //  UPDATED LOGIC: Calculate Timer FIRST
-        // ==========================================
-        
-        // 1. Calculate Feeder Timer & State
-        int feederRemaining = 0;
-        bool isFeederCooling = false;
-        
-        if (_lastFeederCommandTime != null) {
-          final secondsSince = DateTime.now().difference(_lastFeederCommandTime!).inSeconds;
-          if (secondsSince < kSleepDurationSeconds) {
-            isFeederCooling = true;
-            feederRemaining = kSleepDurationSeconds - secondsSince;
-          }
-        }
-
-        // 2. Determine Sync State (Waiting for reply)
-        // (Uncomment your logic here - it is now safe because we handled the timer above)
-        bool isFeederSyncing = false;
-        if (_lastFeederCommandTime != null) {
-          if (lastFeederUpdate == null || lastFeederUpdate.isBefore(_lastFeederCommandTime!)) {
-            isFeederSyncing = true;
-          }
-        }
-
-        // 3. Determine Final Button Text
-        String feederBtnText;
-        if (isFeederSyncing) {
-          // SHOW TIMER EVEN WHILE SYNCING
-          feederBtnText = "Waiting... ${_formatCountdown(feederRemaining)}";
-        } else if (isFeederCooling) {
-          feederBtnText = "Sleep Mode ${_formatCountdown(feederRemaining)}";
-        } else {
-          feederBtnText = "Feed Now";
-        }
-
-        // 4. Disable Button?
-        // Disable if syncing OR cooling
-        final bool isFeederDisabled = isFeederSyncing || isFeederCooling;
-
-
-        // ==========================================
-        //  LAMP LOGIC (Same Pattern)
-        // ==========================================
-        int lampRemaining = 0;
-        bool isLampCooling = false;
-        if (_lastLampCommandTime != null) {
-          final secondsSince = DateTime.now().difference(_lastLampCommandTime!).inSeconds;
-          if (secondsSince < kSleepDurationSeconds) {
-            isLampCooling = true;
-            lampRemaining = kSleepDurationSeconds - secondsSince;
-          }
-        }
-
-        bool isLampSyncing = false;
-        if (_lastLampCommandTime != null) {
-          if (lastLampUpdate == null || lastLampUpdate.isBefore(_lastLampCommandTime!)) {
-            isLampSyncing = true;
-          }
-        }
-
-        String lampBtnText;
-        if (isLampSyncing) {
-           lampBtnText = "Syncing... ${_formatCountdown(lampRemaining)}";
-        } else if (isLampCooling) {
-           lampBtnText = "Sleep Mode ${_formatCountdown(lampRemaining)}";
-        } else {
-           lampBtnText = "Turn ${isLampOn ? 'OFF' : 'ON'}";
-        }
-        
-        final bool isLampDisabled = isLampSyncing || isLampCooling;
-
-
-        return Scaffold(
-          appBar: AppBar(title: const Text("Control Terminal")),
-          body: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                children: [
-                  _buildControlCard(
-                    context: context,
-                    title: "Fish Feeder",
-                    icon: Icons.set_meal,
-                    iconColor: Colors.orange,
-                    statusText: feederStatus,
-                    statusColor: Colors.deepOrange,
-                    isDisabled: isFeederDisabled,
-                    buttonText: feederBtnText, // <--- Updated Text
-                    onPressed: () {
-                      final payload = jsonEncode({"feeder": "ACTIVATE"});
-                      mqttState.sendControlCommand(device.deviceId, payload);
-                      setState(() {
-                        _lastFeederCommandTime = DateTime.now();
-                      });
-                    },
+            return Scaffold(
+              appBar: AppBar(title: const Text("Control Terminal")),
+              body: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.all(18.0),
+                  child: Column(
+                    children: [
+                      // FEEDER CARD
+                      _buildControlCard(
+                        context: context,
+                        title: "Fish Feeder",
+                        icon: Icons.set_meal,
+                        iconColor: showGreenStatus ? Colors.green : Colors.orange,
+                        statusText: feederDisplayStatus,
+                        statusColor: feederColor,
+                        lastUpdatedText: _controller.feederLastUpdatedText,
+                        isDisabled: isFeederDisabled,
+                        buttonText: _controller.feederButtonText,
+                        onPressed: () {
+                          final payload = jsonEncode({"feeder": "ACTIVATE"});
+                          mqttState.sendControlCommand(device.deviceId, payload);
+                          _controller.handleFeederPress(device.deviceId);
+                        },
+                      ),
+                      const SizedBox(height: 15),
+                      
+                      // LAMP CARD
+                      _buildControlCard(
+                        context: context,
+                        title: "12V Lamp",
+                        icon: Icons.lightbulb,
+                        iconColor: isLampOn ? Colors.yellow[700]! : Colors.grey,
+                        statusText: lampStatus,
+                        statusColor: lampColor,
+                        lastUpdatedText: _controller.lampLastUpdatedText,
+                        isDisabled: isLampDisabled,
+                        buttonText: _controller.getLampButtonText(isLampOn),
+                        onPressed: () {
+                          final String command = isLampOn ? "OFF" : "ON";
+                          final payload = jsonEncode({"lamp": command});
+                          mqttState.sendControlCommand(device.deviceId, payload);
+                          _controller.handleLampPress(device.deviceId);
+                        },
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 20),
-                  _buildControlCard(
-                    context: context,
-                    title: "12V Lamp",
-                    icon: Icons.lightbulb,
-                    iconColor: isLampOn ? Colors.yellow[700]! : Colors.grey,
-                    statusText: lampStatus,
-                    statusColor: isLampOn ? Colors.green[700]! : Colors.red[700]!,
-                    isDisabled: isLampDisabled,
-                    buttonText: lampBtnText, // <--- Updated Text
-                    onPressed: () {
-                      final String command = isLampOn ? "OFF" : "ON";
-                      final payload = jsonEncode({"lamp": command});
-                      mqttState.sendControlCommand(device.deviceId, payload);
-                      setState(() {
-                        _lastLampCommandTime = DateTime.now();
-                      });
-                    },
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );
@@ -221,6 +210,7 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
     required Color iconColor,
     required String statusText,
     required Color statusColor,
+    required String lastUpdatedText,
     required bool isDisabled,
     required String buttonText,
     required VoidCallback onPressed,
@@ -236,10 +226,11 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
             const SizedBox(height: 10),
             Text(title, style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 5),
+            
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: statusColor.withOpacity(0.1), // Changed back to withOpacity for compatibility
+                color: statusColor.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(color: statusColor.withOpacity(0.5)),
               ),
@@ -248,6 +239,13 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
                 style: TextStyle(fontWeight: FontWeight.bold, color: statusColor),
               ),
             ),
+            
+            const SizedBox(height: 8),
+            Text(
+              lastUpdatedText,
+              style: TextStyle(fontSize: 12, color: Colors.grey[600], fontStyle: FontStyle.italic),
+            ),
+
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,

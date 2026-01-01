@@ -1,7 +1,6 @@
 // lib/mqtt/mqtt_manager.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mqtt_client/mqtt_client.dart';
@@ -25,7 +24,7 @@ class MQTTManager {
   late final MqttServerClient _client;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>? _updatesSub;
+  StreamSubscription? _updatesSub;
 
   bool _isManuallyDisconnected = false;
   int _reconnectAttempt = 0;
@@ -44,7 +43,8 @@ class MQTTManager {
     required this.site,
   });
 
-  String get topicPath => "aquaculture/$stateName/$district/$area/$site";
+  String get topicPath =>
+      "aquaculture/${stateName.toLowerCase()}/${district.toLowerCase()}/${area.toLowerCase()}/${site.toLowerCase()}";
 
   Future<bool> initializeMQTTClient() async {
     _client = MqttServerClient.withPort(broker, clientIdentifier, port)
@@ -54,50 +54,48 @@ class MQTTManager {
       ..onDisconnected = _onDisconnected
       ..onSubscribed = _onSubscribed
       ..setProtocolV311();
-  
+
+    _client.logging(on: true);
+
     _client.onBadCertificate = (Object certificate) {
-      if (certificate is X509Certificate) {
-        debugPrint("⚠ Bypassing bad certificate: ${certificate.subject}");
-      } else {
-        debugPrint("⚠ Unknown certificate type: $certificate");
-      }
+      debugPrint("⚠ Bypassing bad certificate");
       return true;
     };
-  
-    _listenToUpdatesStream();
+
+    // FIXED: Do NOT listen here. We listen in connect() to ensure fresh subscription.
     return true;
   }
-  
+
   Future<void> connect() async {
     _isManuallyDisconnected = false;
+    
+    // 1. Setup Listener BEFORE connecting
+    _listenToUpdatesStream();
+    
     state.setAppConnectionState(MQTTAppConnectionState.connecting);
-  
+
     _client.connectionMessage = MqttConnectMessage()
         .withClientIdentifier(clientIdentifier)
         .authenticateAs(username, password)
         .startClean();
-  
-    _client.logging(on: true);
-  
+
     try {
       debugPrint("🔌 Attempting MQTT connection to $broker:$port ...");
       await _client.connect().timeout(const Duration(seconds: 30));
-    } catch (e, st) {
+    } catch (e) {
       debugPrint("❌ MQTT connection error: $e");
-      debugPrint("$st");
       _client.disconnect();
       state.setAppConnectionState(MQTTAppConnectionState.disconnected);
       _scheduleReconnect();
       return;
     }
-  
-    final status = _client.connectionStatus;
-    if (status?.state == MqttConnectionState.connected) {
+
+    if (_client.connectionStatus?.state == MqttConnectionState.connected) {
       debugPrint("✅ MQTT connected successfully");
       _subscribeToTopic();
       _reconnectAttempt = 0;
     } else {
-      debugPrint("❌ MQTT connection failed: ${status?.returnCode}");
+      debugPrint("❌ MQTT connection failed");
       _client.disconnect();
       state.setAppConnectionState(MQTTAppConnectionState.disconnected);
       _scheduleReconnect();
@@ -108,104 +106,125 @@ class MQTTManager {
     _isManuallyDisconnected = true;
     _updatesSub?.cancel();
     _updatesSub = null;
-    try {
-      if (_client.connectionStatus?.state == MqttConnectionState.connected) {
-        _client.unsubscribe(topicPath);
-      }
-    } catch (_) {}
     _client.disconnect();
     debugPrint("🔌 Disconnected MQTT for device $deviceId");
   }
 
-  final Set<String> _subscribedTopics = {};
-
   void _subscribeToTopic() {
-    if (_subscribedTopics.contains(topicPath)) {
-      debugPrint("⚠ Already subscribed to $topicPath");
-      return;
-    }
     try {
       _client.subscribe(topicPath, MqttQos.atMostOnce);
-      _subscribedTopics.add(topicPath);
       debugPrint("📡 Subscribed to $topicPath");
     } catch (e) {
       debugPrint("❌ Failed to subscribe to $topicPath: $e");
     }
   }
 
+  // --- FIXED LISTENER LOGIC ---
   void _listenToUpdatesStream() {
     _updatesSub?.cancel();
-    _updatesSub = _client.updates?.listen((messages) {
-      if (messages.isEmpty) return;
-      final rec = messages.first;
-      final msg = rec.payload;
-      if (msg is! MqttPublishMessage) return;
+    
+    // Check if updates stream is available
+    if (_client.updates == null) {
+      debugPrint("❌ Error: _client.updates stream is NULL");
+      return;
+    }
 
-      final payload =
-          MqttPublishPayload.bytesToStringAsString(msg.payload.message);
-      final topic = rec.topic;
-      _handleIncomingMessage(topic, payload);
-    }, onError: (e) {
-      debugPrint("❌ MQTT updates stream error: $e");
-    });
+    _updatesSub = _client.updates!.listen(
+      (List<MqttReceivedMessage<MqttMessage?>>? c) {
+        // 1. Log that an event occurred
+        debugPrint("🔔 MQTT STREAM EVENT RECEIVED");
+
+        if (c == null || c.isEmpty) return;
+
+        final recMess = c[0];
+        final topic = recMess.topic;
+        final msg = recMess.payload;
+
+        // 2. Validate Message Type
+        if (msg is! MqttPublishMessage) {
+          debugPrint("ℹ️ Ignored non-publish message type: ${msg.runtimeType}");
+          return;
+        }
+
+        // 3. Extract Payload safely
+        try {
+          final payload = MqttPublishPayload.bytesToStringAsString(
+            msg.payload.message,
+          );
+          _handleIncomingMessage(topic, payload);
+        } catch (e) {
+          debugPrint("❌ Error parsing payload bytes: $e");
+        }
+      },
+      onError: (e) {
+        debugPrint("❌ MQTT updates stream error: $e");
+      },
+    );
   }
 
   Future<void> _handleIncomingMessage(String topic, String payload) async {
-    if (topic != topicPath) return;
-  
+    debugPrint("📥 MQTT RX: Topic='$topic' Payload='$payload'");
+
+    // Loose check for topic match (ignoring case)
+    if (!topic.toLowerCase().contains(topicPath.toLowerCase())) {
+       debugPrint("⚠ Note: Topic '$topic' might not match '$topicPath'");
+    }
+
     Map<String, dynamic> raw;
     try {
       raw = jsonDecode(payload) as Map<String, dynamic>;
     } catch (e) {
-      debugPrint("❌ Invalid JSON payload for $deviceId: $payload");
+      debugPrint("❌ Invalid JSON payload: $payload");
       return;
     }
-  
+
     final normalizedSensors = <String, double>{};
     final statusUpdates = <String, String>{};
-  
+
     for (final entry in raw.entries) {
       final key = entry.key.toLowerCase();
       final val = entry.value;
+      
+      // Try to parse as double (for sensors like 'temp', 'ph')
       final numVal = _toDouble(val);
-  
+
       if (numVal != null) {
         normalizedSensors[key] = numVal;
         state.updateSensorData(deviceId, key, numVal);
-      } else if (val is String) {
-        statusUpdates[key] = val;
-        state.updateStatus(deviceId, key, val);
+      } else {
+        // Assume String status (e.g. "FED", "ON")
+        final strVal = val.toString();
+        statusUpdates[key] = strVal;
+        
+        // This updates the UI immediately
+        state.updateStatus(deviceId, key, strVal);
+        debugPrint("✅ Status Updated in AppState: $key = $strVal");
       }
     }
-  
-    if (normalizedSensors.isEmpty && statusUpdates.isEmpty) return;
-  
-    final timestamp = FieldValue.serverTimestamp();
-  
-    // 1. Write Latest Readings
-    try {
-      await _firestore.collection("latest_readings").doc(deviceId).set({
-        ...normalizedSensors,
-        ...statusUpdates, 
-        "timestamp": timestamp,
-      }, SetOptions(merge: true));
-    } catch (e) {
-      debugPrint("❌ Write latest_readings failed: $e");
+
+    // Write to Firestore (Latest Readings)
+    if (normalizedSensors.isNotEmpty || statusUpdates.isNotEmpty) {
+      try {
+        await _firestore.collection("latest_readings").doc(deviceId).set({
+          ...normalizedSensors,
+          ...statusUpdates,
+          "timestamp": FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } catch (e) {
+        debugPrint("❌ Firestore write failed: $e");
+      }
     }
-  
-    // 2. Write History
+
+    // Write History (Only numbers)
     if (normalizedSensors.isNotEmpty) {
       try {
-        await _firestore.collection("readings").doc(deviceId).collection("data").add({
-          ...normalizedSensors,
-          "timestamp": timestamp,
-        });
-      } catch (e) {
-        debugPrint("❌ Write readings history failed: $e");
-      }
+        await _firestore
+            .collection("readings")
+            .doc(deviceId)
+            .collection("data")
+            .add({...normalizedSensors, "timestamp": FieldValue.serverTimestamp()});
+      } catch (_) {}
     }
-    
-    // ❌ DELETED: Threshold checks logic removed from here.
   }
 
   void _onConnected() {
@@ -215,20 +234,16 @@ class MQTTManager {
 
   void _onDisconnected() {
     state.setAppConnectionState(MQTTAppConnectionState.disconnected);
-    _updatesSub?.cancel();
-    _updatesSub = null;
     if (!_isManuallyDisconnected) _scheduleReconnect();
   }
 
   void _onSubscribed(String topic) {
-    debugPrint("✅ Subscribed to $topic");
+    debugPrint("✅ Subscribed callback: $topic");
   }
 
   void _scheduleReconnect() {
     _reconnectAttempt = (_reconnectAttempt + 1).clamp(1, 10);
-    final delay = Duration(seconds: (5 * _reconnectAttempt).clamp(5, 60));
-    debugPrint("🔄 Reconnecting in ${delay.inSeconds} seconds...");
-    Future.delayed(delay, () {
+    Future.delayed(Duration(seconds: 5 * _reconnectAttempt), () {
       if (!_isManuallyDisconnected) connect();
     });
   }
@@ -240,18 +255,11 @@ class MQTTManager {
   }
 
   void publish(String subtopic, String message, {bool retain = false}) {
-    if (_client.connectionStatus?.state != MqttConnectionState.connected) {
-      debugPrint("❌ Cannot publish: MQTT not connected");
-      return;
-    }
+    if (_client.connectionStatus?.state != MqttConnectionState.connected) return;
     final pubTopic = "$topicPath/$subtopic";
     final builder = MqttClientPayloadBuilder();
     builder.addString(message);
-    try {
-      _client.publishMessage(pubTopic, MqttQos.atLeastOnce, builder.payload!, retain: retain);
-      debugPrint("📤 Published to $pubTopic: $message (Retain: $retain)");
-    } catch (e) {
-      debugPrint("❌ Failed to publish: $e");
-    }
+    _client.publishMessage(pubTopic, MqttQos.atLeastOnce, builder.payload!, retain: retain);
+    debugPrint("📤 Published to $pubTopic: $message");
   }
 }

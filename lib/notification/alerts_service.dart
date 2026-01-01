@@ -19,6 +19,8 @@ class AlertsService {
         .doc(deviceId)
         .collection('logs');
 
+    data['read'] = false;
+
     // Ensure defaults
     data['notified'] = data['notified'] ?? false;
     data['timestamp'] = data['timestamp'] ?? FieldValue.serverTimestamp();

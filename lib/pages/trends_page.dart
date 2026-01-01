@@ -293,10 +293,10 @@ class _SensorChartState extends State<SensorChart>
                       color: Colors.blueAccent,
                       markerSettings: const MarkerSettings(
                         isVisible: true, // ✅ ALWAYS show dots
-                        height: 6, // Small dots so they don't clutter
-                        width: 6,
+                        height: 7, // Small dots so they don't clutter
+                        width: 7,
                         shape: DataMarkerType.circle,
-                        borderWidth: 0,
+                        borderWidth: 2,
                         color: Color.fromARGB(255, 8, 228, 132),
                       ),
                     ),

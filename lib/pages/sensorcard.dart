@@ -79,7 +79,7 @@ class SensorCard extends StatelessWidget {
 
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
+      margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 6),
       elevation: 2,
       child: Padding(
         padding: EdgeInsets.all(12 * scale),
@@ -104,7 +104,7 @@ class SensorCard extends StatelessWidget {
                           color: Colors.grey,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 6),
                       Text(
                         _formatValue(sensor.key, displayValue, sensor.unit),
                         style: TextStyle(
