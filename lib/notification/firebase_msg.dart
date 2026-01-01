@@ -2,9 +2,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
-
+import 'package:aquaculture/notification/notification_service.dart';
 import '../device_context.dart';
-import '../notification/alerts_service.dart';
 
 class FirebaseMsgService {
   final FirebaseMessaging _fm = FirebaseMessaging.instance;
@@ -42,26 +41,15 @@ class FirebaseMsgService {
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
     try {
       final notif = message.notification;
-      final data = message.data;
       if (notif == null) return;
 
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+      debugPrint("🔔 Foreground Push Received: ${notif.title}");
 
-      // Resolve deviceId
-      final deviceId =
-          data['deviceId'] ?? deviceContext.selected?.deviceId ?? 'general';
-
-      // Save alert via AlertsService
-      await AlertsService().addAlert(
-        user.uid,
-        deviceId,
-        {
-          'title': notif.title ?? 'Notification',
-          'message': notif.body ?? '',
-          'sensor': data['sensor'] ?? '',
-          'value': _parseValue(data['value']),
-        },
+      // 1. Show the Local Notification immediately
+      // Do NOT write to Firestore (AlertsService().addAlert) because the Cloudflare Worker ALREADY wrote it.
+      await NotiService().showNotification(
+        title: notif.title ?? 'Alert',
+        body: notif.body ?? '',
       );
     } catch (e, st) {
       debugPrint("❌ Error handling foreground message: $e\n$st");
@@ -119,13 +107,5 @@ class FirebaseMsgService {
     } catch (e) {
       debugPrint("❌ Failed to unsubscribe: $e");
     }
-  }
-
-  /// Parse values safely
-  dynamic _parseValue(dynamic v) {
-    if (v == null) return null;
-    if (v is num) return v.toDouble();
-    if (v is String) return double.tryParse(v) ?? v;
-    return v.toString();
   }
 }

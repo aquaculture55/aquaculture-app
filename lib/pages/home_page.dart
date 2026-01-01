@@ -6,7 +6,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import '../device_context.dart';
 import 'sensorcard.dart';
-import '../notification/alerts_service.dart';
 import 'threshold_settings_page.dart';
 import 'package:aquaculture/mqtt/state/mqtt_app_state.dart';
 
@@ -25,10 +24,8 @@ class _HomePageState extends State<HomePage> {
     "turbidity",
     "waterlevel"
   ];
-  final AlertsService _alertsService = AlertsService();
-
+  
   Map<String, dynamic> _cachedReadings = {};
-  final Map<String, DateTime> _lastAlertAt = {};
 
   @override
   Widget build(BuildContext context) {
@@ -59,8 +56,6 @@ class _HomePageState extends State<HomePage> {
       },
     );
   }
-
-  // ================= Device Info =================
 
   Widget _deviceInfoBar(DeviceInfo device, Map<String, dynamic> meta,
           MQTTAppState mqttState) =>
@@ -122,16 +117,10 @@ class _HomePageState extends State<HomePage> {
     if (selectedDevice != null && selectedDevice is DeviceInfo) {
       final deviceCtx = Provider.of<DeviceContext>(context, listen: false);
       deviceCtx.setSelected(selectedDevice);
-
-      // Clear cached readings and alerts
       _cachedReadings.clear();
-      _lastAlertAt.clear();
-
-      setState(() {}); // Refresh UI
+      setState(() {}); 
     }
   }
-
-  // ================= Readings & Thresholds =================
 
   Widget _buildReadingsAndThresholds(String userId, String deviceId) {
     final thresholdsStream = FirebaseFirestore.instance
@@ -165,9 +154,7 @@ class _HomePageState extends State<HomePage> {
             if (readingsSnap.hasData && readingsSnap.data!.exists) {
               readings = _parseReadings(readingsSnap.data);
               _cachedReadings = readings;
-              if (thresholds.isNotEmpty) {
-                _triggerAlertsIfNeeded(readings, thresholds, userId, deviceId);
-              }
+              // ❌ NO ALERT LOGIC HERE
             }
 
             if (readingsSnap.hasError) {
@@ -220,51 +207,6 @@ class _HomePageState extends State<HomePage> {
     if (value is String) return double.tryParse(value) ?? double.nan;
     return double.nan;
   }
-
-  // ================= Alerts =================
-
-  Future<void> _triggerAlertsIfNeeded(
-    Map<String, dynamic> readings,
-    Map<String, Map<String, double>> thresholds,
-    String userId,
-    String deviceId,
-  ) async {
-    for (final key in _sensorKeys) {
-      final value = _toDoubleSafe(readings[key]);
-      final min = thresholds[key]?['min'];
-      final max = thresholds[key]?['max'];
-      if (value.isNaN || (min == null && max == null)) continue;
-
-      String? title;
-      String? msg;
-      if (min != null && value < min) {
-        title = "Low ${key.toUpperCase()}";
-        msg = "$key reading ${value.toStringAsFixed(2)} below min $min";
-      } else if (max != null && value > max) {
-        title = "High ${key.toUpperCase()}";
-        msg = "$key reading ${value.toStringAsFixed(2)} above max $max";
-      }
-
-      if (title != null) {
-        final now = DateTime.now();
-        final last = _lastAlertAt[key];
-        if (last == null || now.difference(last).inSeconds >= 30) {
-          _lastAlertAt[key] = now;
-          await _alertsService.addAlert(userId, deviceId, {
-            'title': title,
-            'message': msg,
-            'sensor': key,
-            'value': value,
-            'timestamp': FieldValue.serverTimestamp(),
-            'read': false,
-            'notified': false,
-          });
-        }
-      }
-    }
-  }
-
-  // ================= UI Helpers =================
 
   Widget _noDeviceSelectedWidget() => Center(
         child: Padding(
@@ -348,7 +290,6 @@ class _HomePageState extends State<HomePage> {
       Map<String, dynamic> readings) {
     final media = MediaQuery.of(context);
     final isPortrait = media.orientation == Orientation.portrait;
-
     final hasData = readings.isNotEmpty;
 
     if (isPortrait) {
@@ -424,56 +365,33 @@ class _HomePageState extends State<HomePage> {
         ),
       );
 
-  // ================= Sensor Meta =================
-
   static IconData _sensorIcon(String key) {
     switch (key) {
-      case "temperature":
-        return Icons.thermostat;
-      case "ph":
-        return Icons.water;
-      case "tds":
-        return Icons.bubble_chart;
-      case "turbidity":
-        return Icons.opacity;
-      case "waterlevel":
-        return Icons.waves;
-      default:
-        return Icons.device_unknown;
+      case "temperature": return Icons.thermostat;
+      case "ph": return Icons.water;
+      case "tds": return Icons.bubble_chart;
+      case "turbidity": return Icons.opacity;
+      case "waterlevel": return Icons.waves;
+      default: return Icons.device_unknown;
     }
   }
 
   static String _sensorUnit(String key) {
     switch (key) {
-      case "temperature":
-        return "°C";
-      case "ph":
-        return "";
-      case "tds":
-        return "ppm";
-      case "turbidity":
-        return "Level";
-      case "waterlevel":
-        return "%";
-      default:
-        return "";
+      case "temperature": return "°C";
+      case "ph": return "";
+      case "tds": return "ppm";
+      case "turbidity": return "Level";
+      case "waterlevel": return "%";
+      default: return "";
     }
   }
 
   static String _formatTimestamp(dynamic ts) {
     try {
-      if (ts is Timestamp) {
-        return ts.toDate().toLocal().toString().substring(0, 16);
-      }
-      if (ts is DateTime) {
-        return ts.toLocal().toString().substring(0, 16);
-      }
-      if (ts is int) {
-        return DateTime.fromMillisecondsSinceEpoch(ts)
-            .toLocal()
-            .toString()
-            .substring(0, 16);
-      }
+      if (ts is Timestamp) return ts.toDate().toLocal().toString().substring(0, 16);
+      if (ts is DateTime) return ts.toLocal().toString().substring(0, 16);
+      if (ts is int) return DateTime.fromMillisecondsSinceEpoch(ts).toLocal().toString().substring(0, 16);
     } catch (_) {}
     return '--';
   }

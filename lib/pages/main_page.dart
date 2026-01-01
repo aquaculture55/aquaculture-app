@@ -92,12 +92,39 @@ class _MainPageState extends State<MainPage>
     final deviceCtx = Provider.of<DeviceContext>(context, listen: false);
     final mqttState = Provider.of<MQTTAppState>(context, listen: false);
 
+    // Case 1: A specific device was passed (e.g. from picker)
     if (device != null) {
-      await deviceCtx.setSelected(device);
-    } else if (deviceCtx.selected == null) {
+      await deviceCtx.setSelected(device, saveToken: true);
+    }
+    // Case 2: No device selected yet (App Start)
+    else if (deviceCtx.selected == null) {
       final subs = await deviceCtx.loadDevicesForUser(user.uid);
+
       if (subs.isNotEmpty) {
-        await deviceCtx.setSelected(subs.first);
+        DeviceInfo targetDevice = subs.first; // Default fallback
+
+        // --- NEW LOGIC: Try to find the last selected device ---
+        try {
+          final userDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get();
+
+          if (userDoc.exists) {
+            final lastId = userDoc.data()?['lastSelectedDevice'];
+            if (lastId != null) {
+              // Find the device in the loaded list that matches the ID
+              targetDevice = subs.firstWhere(
+                (d) => d.deviceId == lastId,
+                orElse: () => subs.first,
+              );
+            }
+          }
+        } catch (e) {
+          debugPrint("⚠️ Error loading last device preference: $e");
+        }
+        // -------------------------------------------------------
+        await deviceCtx.setSelected(targetDevice, saveToken: true);
       }
     }
 

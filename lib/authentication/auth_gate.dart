@@ -25,10 +25,10 @@ class _AuthGateState extends State<AuthGate> {
     _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {
       if (user != null) {
         // Only start the listener if not already active
-        if (!_alertListenerActive) {
-          alertListener.startListening();
-          _alertListenerActive = true;
-        }
+        //if (!_alertListenerActive) {
+        //  alertListener.startListening();
+        //  _alertListenerActive = true;
+        //}
       } else {
         // Stop listener on logout
         if (_alertListenerActive) {

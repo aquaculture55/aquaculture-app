@@ -1,6 +1,7 @@
+// lib/pages/control_page.dart
 import 'dart:async';
 import 'dart:convert';
-import 'package:cloud_firestore/cloud_firestore.dart'; // Required for StreamBuilder
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../device_context.dart';
@@ -43,6 +44,7 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
   }
 
   String _formatCountdown(int totalSeconds) {
+    if (totalSeconds < 0) return "00:00";
     final int minutes = totalSeconds ~/ 60;
     final int seconds = totalSeconds % 60;
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
@@ -58,7 +60,6 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
 
     if (device == null) return const Center(child: Text("No device selected"));
 
-    // Listen to Firestore Real-time to keep multi-user synced
     return StreamBuilder<DocumentSnapshot>(
       stream: FirebaseFirestore.instance
           .collection('latest_readings')
@@ -88,16 +89,14 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
         final DateTime? lastFeederUpdate = mqttState.getLastUpdateTime(device.deviceId, 'feeder');
         final DateTime? lastLampUpdate = mqttState.getLastUpdateTime(device.deviceId, 'lamp');
 
-        // --- Logic: Fish Feeder ---
-        bool isFeederSyncing = false;
-        if (_lastFeederCommandTime != null) {
-          if (lastFeederUpdate == null || lastFeederUpdate.isBefore(_lastFeederCommandTime!)) {
-            isFeederSyncing = true;
-          }
-        }
-
-        bool isFeederCooling = false;
+        // ==========================================
+        //  UPDATED LOGIC: Calculate Timer FIRST
+        // ==========================================
+        
+        // 1. Calculate Feeder Timer & State
         int feederRemaining = 0;
+        bool isFeederCooling = false;
+        
         if (_lastFeederCommandTime != null) {
           final secondsSince = DateTime.now().difference(_lastFeederCommandTime!).inSeconds;
           if (secondsSince < kSleepDurationSeconds) {
@@ -105,18 +104,37 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
             feederRemaining = kSleepDurationSeconds - secondsSince;
           }
         }
-        final bool isFeederDisabled = isFeederSyncing || isFeederCooling;
 
-        // --- Logic: 12V Lamp ---
-        bool isLampSyncing = false;
-        if (_lastLampCommandTime != null) {
-          if (lastLampUpdate == null || lastLampUpdate.isBefore(_lastLampCommandTime!)) {
-            isLampSyncing = true;
+        // 2. Determine Sync State (Waiting for reply)
+        // (Uncomment your logic here - it is now safe because we handled the timer above)
+        bool isFeederSyncing = false;
+        if (_lastFeederCommandTime != null) {
+          if (lastFeederUpdate == null || lastFeederUpdate.isBefore(_lastFeederCommandTime!)) {
+            isFeederSyncing = true;
           }
         }
 
-        bool isLampCooling = false;
+        // 3. Determine Final Button Text
+        String feederBtnText;
+        if (isFeederSyncing) {
+          // SHOW TIMER EVEN WHILE SYNCING
+          feederBtnText = "Waiting... ${_formatCountdown(feederRemaining)}";
+        } else if (isFeederCooling) {
+          feederBtnText = "Sleep Mode ${_formatCountdown(feederRemaining)}";
+        } else {
+          feederBtnText = "Feed Now";
+        }
+
+        // 4. Disable Button?
+        // Disable if syncing OR cooling
+        final bool isFeederDisabled = isFeederSyncing || isFeederCooling;
+
+
+        // ==========================================
+        //  LAMP LOGIC (Same Pattern)
+        // ==========================================
         int lampRemaining = 0;
+        bool isLampCooling = false;
         if (_lastLampCommandTime != null) {
           final secondsSince = DateTime.now().difference(_lastLampCommandTime!).inSeconds;
           if (secondsSince < kSleepDurationSeconds) {
@@ -124,7 +142,25 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
             lampRemaining = kSleepDurationSeconds - secondsSince;
           }
         }
+
+        bool isLampSyncing = false;
+        if (_lastLampCommandTime != null) {
+          if (lastLampUpdate == null || lastLampUpdate.isBefore(_lastLampCommandTime!)) {
+            isLampSyncing = true;
+          }
+        }
+
+        String lampBtnText;
+        if (isLampSyncing) {
+           lampBtnText = "Syncing... ${_formatCountdown(lampRemaining)}";
+        } else if (isLampCooling) {
+           lampBtnText = "Sleep Mode ${_formatCountdown(lampRemaining)}";
+        } else {
+           lampBtnText = "Turn ${isLampOn ? 'OFF' : 'ON'}";
+        }
+        
         final bool isLampDisabled = isLampSyncing || isLampCooling;
+
 
         return Scaffold(
           appBar: AppBar(title: const Text("Control Terminal")),
@@ -134,16 +170,14 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
               child: Column(
                 children: [
                   _buildControlCard(
-                    context: context, // FIX: Added named parameter 'context:'
+                    context: context,
                     title: "Fish Feeder",
                     icon: Icons.set_meal,
                     iconColor: Colors.orange,
                     statusText: feederStatus,
                     statusColor: Colors.deepOrange,
                     isDisabled: isFeederDisabled,
-                    buttonText: isFeederSyncing
-                        ? "Waiting for Device..."
-                        : (isFeederCooling ? "Sleep Mode ${_formatCountdown(feederRemaining)}" : "Feed Now"),
+                    buttonText: feederBtnText, // <--- Updated Text
                     onPressed: () {
                       final payload = jsonEncode({"feeder": "ACTIVATE"});
                       mqttState.sendControlCommand(device.deviceId, payload);
@@ -154,16 +188,14 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
                   ),
                   const SizedBox(height: 20),
                   _buildControlCard(
-                    context: context, // FIX: Added named parameter 'context:'
+                    context: context,
                     title: "12V Lamp",
                     icon: Icons.lightbulb,
                     iconColor: isLampOn ? Colors.yellow[700]! : Colors.grey,
                     statusText: lampStatus,
                     statusColor: isLampOn ? Colors.green[700]! : Colors.red[700]!,
                     isDisabled: isLampDisabled,
-                    buttonText: isLampSyncing
-                        ? "Syncing..."
-                        : (isLampCooling ? "Sleep Mode ${_formatCountdown(lampRemaining)}" : "Turn ${isLampOn ? 'OFF' : 'ON'}"),
+                    buttonText: lampBtnText, // <--- Updated Text
                     onPressed: () {
                       final String command = isLampOn ? "OFF" : "ON";
                       final payload = jsonEncode({"lamp": command});
@@ -182,7 +214,6 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
     );
   }
 
-  // Helper widget with fixed named parameters
   Widget _buildControlCard({
     required BuildContext context,
     required String title,
@@ -208,10 +239,9 @@ class _ControlPageState extends State<ControlPage> with AutomaticKeepAliveClient
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                // FIX: Replaced deprecated .withOpacity with .withValues(alpha:)
-                color: statusColor.withValues(alpha: 0.1), 
+                color: statusColor.withOpacity(0.1), // Changed back to withOpacity for compatibility
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: statusColor.withValues(alpha: 0.5)),
+                border: Border.all(color: statusColor.withOpacity(0.5)),
               ),
               child: Text(
                 "Status: $statusText",

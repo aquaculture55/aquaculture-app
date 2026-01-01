@@ -34,21 +34,21 @@ class _TrendsPageState extends State<TrendsPage> {
         .doc(widget.deviceId)
         .snapshots()
         .map((doc) {
-      final thresholds = <String, Map<String, double>>{};
-      if (!doc.exists) return thresholds;
+          final thresholds = <String, Map<String, double>>{};
+          if (!doc.exists) return thresholds;
 
-      final data = doc.data() ?? {};
-      for (final sensor in widget.sensors) {
-        final m = data[sensor];
-        if (m is Map<String, dynamic>) {
-          thresholds[sensor] = {
-            'min': _toDouble(m['min']),
-            'max': _toDouble(m['max']),
-          };
-        }
-      }
-      return thresholds;
-    });
+          final data = doc.data() ?? {};
+          for (final sensor in widget.sensors) {
+            final m = data[sensor];
+            if (m is Map<String, dynamic>) {
+              thresholds[sensor] = {
+                'min': _toDouble(m['min']),
+                'max': _toDouble(m['max']),
+              };
+            }
+          }
+          return thresholds;
+        });
   }
 
   static double _toDouble(dynamic v) {
@@ -108,9 +108,39 @@ class _SensorChartState extends State<SensorChart>
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _subscription;
   List<_Pt> chartData = [];
 
+  // --- NEW: Interactive Behaviors ---
+  late TrackballBehavior _trackballBehavior;
+  late ZoomPanBehavior _zoomPanBehavior;
+
   @override
   void initState() {
     super.initState();
+
+    // 1. Initialize Trackball (Slide finger to see values)
+    _trackballBehavior = TrackballBehavior(
+      enable: true,
+      activationMode: ActivationMode.singleTap, // Tap or drag to activate
+      tooltipSettings: const InteractiveTooltip(
+        enable: true,
+        color: Colors.black87,
+        format: 'point.y', // Shows value in tooltip
+      ),
+      // Shows a line and marker where you touch
+      lineType: TrackballLineType.vertical,
+      markerSettings: const TrackballMarkerSettings(
+        markerVisibility: TrackballVisibilityMode.visible,
+      ),
+      shouldAlwaysShow: true, // Snaps to nearest point
+    );
+
+    // 2. Initialize Zoom (Pinch to zoom)
+    _zoomPanBehavior = ZoomPanBehavior(
+      enablePinching: true,
+      enablePanning: true,
+      enableDoubleTapZooming: true,
+      zoomMode: ZoomMode.x, // Zooming time usually makes more sense
+    );
+
     _subscribeToReadings();
   }
 
@@ -123,12 +153,12 @@ class _SensorChartState extends State<SensorChart>
         .doc(widget.deviceId)
         .collection('data')
         .orderBy('timestamp', descending: false)
-        .limit(500) // more points but downsample later
+        .limit(500)
         .snapshots()
         .listen(
-      _processReadings,
-      onError: (e) => debugPrint('❌ Trends stream error: $e'),
-    );
+          _processReadings,
+          onError: (e) => debugPrint('❌ Trends stream error: $e'),
+        );
   }
 
   void _processReadings(QuerySnapshot<Map<String, dynamic>> snapshot) {
@@ -147,15 +177,14 @@ class _SensorChartState extends State<SensorChart>
 
       final time = (rawTs is Timestamp)
           ? rawTs.toDate()
-          : (rawTs is int
-              ? DateTime.fromMillisecondsSinceEpoch(rawTs)
-              : null);
+          : (rawTs is int ? DateTime.fromMillisecondsSinceEpoch(rawTs) : null);
       if (time == null) continue;
 
       points.add(_Pt(time: time, value: value));
     }
 
-    setState(() => chartData = downsample(points, 150));
+    // Increased downsample limit slightly to keep more detail
+    setState(() => chartData = downsample(points, 200));
   }
 
   List<_Pt> downsample(List<_Pt> data, int maxPoints) {
@@ -198,18 +227,27 @@ class _SensorChartState extends State<SensorChart>
                 children: [
                   Text(
                     widget.sensorType.toUpperCase(),
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Text(
                         "Latest: ${latest.value.toStringAsFixed(2)}",
-                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       Text(
                         DateFormat("MMM d, HH:mm").format(latest.time),
-                        style: const TextStyle(fontSize: 12, color: Colors.black54),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.black54,
+                        ),
                       ),
                     ],
                   ),
@@ -218,84 +256,53 @@ class _SensorChartState extends State<SensorChart>
               const SizedBox(height: 12),
               Expanded(
                 child: SfCartesianChart(
+                  // 3. Attach Behaviors
+                  trackballBehavior: _trackballBehavior,
+                  zoomPanBehavior: _zoomPanBehavior,
+
                   primaryXAxis: DateTimeAxis(
                     dateFormat: DateFormat('HH:mm'),
                     intervalType: DateTimeIntervalType.hours,
                     edgeLabelPlacement: EdgeLabelPlacement.shift,
+                    majorGridLines: const MajorGridLines(
+                      width: 0,
+                    ), // Cleaner look
                   ),
                   primaryYAxis: NumericAxis(
+                    axisLine: const AxisLine(width: 0),
+                    majorTickLines: const MajorTickLines(size: 0),
                     plotBands: [
-                      if (minTh != null) _buildPlotBand(minTh, Colors.green, 'Min $minTh'),
-                      if (maxTh != null) _buildPlotBand(maxTh, Colors.red, 'Max $maxTh'),
+                      if (minTh != null)
+                        _buildPlotBand(minTh, Colors.green, 'Min $minTh'),
+                      if (maxTh != null)
+                        _buildPlotBand(maxTh, Colors.red, 'Max $maxTh'),
                     ],
                   ),
-                  zoomPanBehavior: ZoomPanBehavior(
-                    enablePinching: true,
-                    enablePanning: true,
-                    enableDoubleTapZooming: true,
-                  ),
 
-                  tooltipBehavior: TooltipBehavior(
-                    enable: true,
-                    builder: (dynamic data, dynamic point, dynamic series, int pointIndex, int seriesIndex) {
-                      if (data is! _Pt) return const SizedBox.shrink();
-                      final pt = data;
-                      final sensorName = widget.sensorType;
-
-                      return Container(
-                        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.black87,
-                          borderRadius: BorderRadius.circular(6),
-                          boxShadow: const [
-                            BoxShadow(color: Colors.black26, blurRadius: 3, offset: Offset(0, 2)),
-                          ],
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              sensorName.toUpperCase(),
-                              style: const TextStyle(color: Colors.white70, fontSize: 11),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              pt.displayValue,
-                              style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              pt.displayTime,
-                              style: const TextStyle(color: Colors.white70, fontSize: 11),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-
-
+                  // NOTE: TooltipBehavior removed because Trackball replaces it
                   series: <CartesianSeries<_Pt, DateTime>>[
                     LineSeries<_Pt, DateTime>(
                       name: widget.sensorType.toUpperCase(),
                       dataSource: chartData,
                       xValueMapper: (d, _) => d.time,
                       yValueMapper: (d, _) => d.value,
-                      enableTooltip: true,
-                      animationDuration: 400,
-                      markerSettings: MarkerSettings(
-                        isVisible: chartData.length <= 50,
+                      animationDuration: 600,
+
+                      // 4. Thicker Line & Visible Markers
+                      width: 3, // Thicker line is easier to see
+                      color: Colors.blueAccent,
+                      markerSettings: const MarkerSettings(
+                        isVisible: true, // ✅ ALWAYS show dots
+                        height: 6, // Small dots so they don't clutter
+                        width: 6,
                         shape: DataMarkerType.circle,
-                        borderWidth: 1,
-                        borderColor: Colors.black54,
+                        borderWidth: 0,
+                        color: Color.fromARGB(255, 8, 228, 132),
                       ),
                     ),
                   ],
                 ),
-              )
-
-
+              ),
             ],
           ),
         ),
@@ -307,10 +314,15 @@ class _SensorChartState extends State<SensorChart>
     return PlotBand(
       start: value - 0.001,
       end: value + 0.001,
-      borderColor: color,
-      borderWidth: 2,
+      borderColor: color.withOpacity(0.5),
+      borderWidth: 1.5,
+      // dashArray: const <double>[5, 5], // Optional: Dashed line for thresholds
       text: label,
-      textStyle: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.bold),
+      textStyle: TextStyle(
+        fontSize: 11,
+        color: color,
+        fontWeight: FontWeight.w600,
+      ),
       horizontalTextAlignment: TextAnchor.end,
       verticalTextAlignment: TextAnchor.start,
     );
@@ -323,14 +335,12 @@ class _SensorChartState extends State<SensorChart>
 class _Pt {
   final DateTime time;
   final double value;
-  final String displayTime;   // preformatted time
-  final String displayValue;  // preformatted value
+  final String displayTime;
+  final String displayValue;
 
-  _Pt({
-    required DateTime? time,
-    required double? value,
-  })  : time = time ?? DateTime.now(),
-        value = value ?? 0.0,
-        displayTime = DateFormat('MMM d, HH:mm').format(time ?? DateTime.now()),
-        displayValue = (value ?? 0.0).toStringAsFixed(2);
+  _Pt({required DateTime? time, required double? value})
+    : time = time ?? DateTime.now(),
+      value = value ?? 0.0,
+      displayTime = DateFormat('MMM d, HH:mm').format(time ?? DateTime.now()),
+      displayValue = (value ?? 0.0).toStringAsFixed(2);
 }

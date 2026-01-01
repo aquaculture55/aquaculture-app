@@ -1,12 +1,13 @@
+// lib/device_context.dart
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
 class DeviceInfo {
-  final String deviceId; // e.g. "my_kedah_area1_sitea"
-  final String displayTopic; // aquaculture/MY/Kedah/Area1/SiteA
-  final String fcmTopic; // aquaculture_my_kedah_area1_sitea
+  final String deviceId;
+  final String displayTopic;
+  final String fcmTopic;
   final Map<String, dynamic> meta;
 
   DeviceInfo({
@@ -16,17 +17,14 @@ class DeviceInfo {
     required this.meta,
   });
 
-  /// Convert display topic into FCM-safe topic
   static String toFcmTopic(String displayTopic) =>
       displayTopic.replaceAll('/', '_').toLowerCase();
 }
 
 class DeviceContext extends ChangeNotifier {
-  // -------------------- SINGLETON --------------------
   static final DeviceContext _instance = DeviceContext._internal();
   factory DeviceContext() => _instance;
   DeviceContext._internal();
-  // ---------------------------------------------------
 
   DeviceInfo? _selected;
   DeviceInfo? get selected => _selected;
@@ -34,14 +32,12 @@ class DeviceContext extends ChangeNotifier {
   String? _currentUid;
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
 
-  /// Generate device ID from topic
   String generateDeviceIdFromTopic(String topic) {
     final parts = topic.split('/');
     if (parts.length < 5) return topic.toLowerCase();
     return "${parts[1]}_${parts[2]}_${parts[3]}_${parts[4]}".toLowerCase();
   }
 
-  /// Parse topic metadata
   Map<String, dynamic> parseTopicMeta(String topic) {
     final parts = topic.split('/');
     if (parts.length < 5) return {};
@@ -53,7 +49,6 @@ class DeviceContext extends ChangeNotifier {
     };
   }
 
-  /// ✅ Create DeviceInfo from topic
   DeviceInfo createDeviceInfoFromTopic(
     String topic,
     Map<String, dynamic> meta,
@@ -74,7 +69,6 @@ class DeviceContext extends ChangeNotifier {
     );
   }
 
-  /// Load all devices for a user
   Future<List<DeviceInfo>> loadDevicesForUser(
     String uid, {
     String? newTopic,
@@ -110,7 +104,6 @@ class DeviceContext extends ChangeNotifier {
     return devices;
   }
 
-  /// Set selected device, update Firestore, optionally save FCM token
   Future<void> setSelected(DeviceInfo info, {bool saveToken = false}) async {
     _selected = info;
     notifyListeners();
@@ -142,6 +135,14 @@ class DeviceContext extends ChangeNotifier {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'lastSelectedDevice': info.deviceId,
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint("⚠️ Failed to save last selected device: $e");
+    }
+
     if (saveToken) {
       final token = await _messaging.getToken();
       if (token != null) {
@@ -150,29 +151,29 @@ class DeviceContext extends ChangeNotifier {
     }
   }
 
-  /// Save current FCM token under device (not under user)
+  /// ✅ FIXED: Save Token to users/{uid}/fcmTokens/{deviceId}
+  /// This matches where the Cloudflare Worker looks for it.
   Future<void> saveFcmToken(String token) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || _selected == null) return;
 
     final tokenDoc = FirebaseFirestore.instance
-        .collection('devices')
-        .doc(_selected!.deviceId)
+        .collection('users') // Changed from 'devices' to 'users'
+        .doc(user.uid)
         .collection('fcmTokens')
-        .doc(user.uid);
+        .doc(_selected!.deviceId);
 
     await tokenDoc.set({
       'email': user.email,
-      'tokens': FieldValue.arrayUnion([token]),
+      'fcmTokens': FieldValue.arrayUnion([token]),
       'lastUpdated': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
     debugPrint(
-      "✅ Saved FCM token for device ${_selected!.deviceId}, user ${user.uid}: $token",
+      "✅ Saved FCM token for Worker at users/${user.uid}/fcmTokens/${_selected!.deviceId}",
     );
   }
 
-  /// Clear selected device and user context
   void clear() {
     _selected = null;
     _currentUid = null;
